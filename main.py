@@ -3,11 +3,13 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
-from typing import List
+from typing import List, Optional
 import os
 import uvicorn
 
 from ccpd import essay_overlap_analysis
+from config import DEFAULT_HASH_PARAMETER
+from content_hash import hash_content
 
 app = FastAPI(title="作文文本比对服务")
 
@@ -24,6 +26,14 @@ class CompareRequest(BaseModel):
     candidate_text: str = None
 
 
+class ContentHashRequest(BaseModel):
+    uuid: Optional[str] = None
+    compositionContent: Optional[str] = None
+    language: Optional[str] = "zh"
+    hashMethod: Optional[str] = "MinHash"
+    para: Optional[int] = DEFAULT_HASH_PARAMETER
+
+
 class DetailItem(BaseModel):
     sentence: str
     best_match: str
@@ -37,6 +47,13 @@ class CompareResponse(BaseModel):
     sentence_repeat_rate: float
     word_repeat_rate: float
     details: List[DetailItem]
+
+
+class ContentHashResponse(BaseModel):
+    uuid: str
+    minhash: Optional[List[int]] = None
+    simhash: Optional[int] = None
+    parameter: int
 
 
 @app.post("/api/composition_compare", response_model=CompareResponse)
@@ -69,6 +86,25 @@ def composition_compare(req: CompareRequest):
         word_repeat_rate=round(float(result["word_repeat_rate"]), 4),
         details=details,
     )
+
+
+@app.post("/api/contentHash", response_model=ContentHashResponse, response_model_exclude_none=True)
+def content_hash(req: ContentHashRequest):
+    if not req.uuid:
+        raise HTTPException(status_code=400, detail={"msg": "请求参数uuid不能为空"})
+    if not req.compositionContent:
+        raise HTTPException(status_code=400, detail={"msg": "请求参数compositionContent不能为空"})
+    if req.language not in {"zh", "en"}:
+        raise HTTPException(status_code=400, detail={"msg": "请求参数language仅支持zh或en"})
+    if req.hashMethod not in {"MinHash", "SimHash"}:
+        raise HTTPException(status_code=400, detail={"msg": "请求参数hashMethod仅支持MinHash或SimHash"})
+    if not isinstance(req.para, int) or req.para <= 0:
+        raise HTTPException(status_code=400, detail={"msg": "请求参数para必须为正整数"})
+    if req.hashMethod == "SimHash" and req.para % 8 != 0:
+        raise HTTPException(status_code=400, detail={"msg": "SimHash请求参数para必须为8的倍数"})
+
+    result = hash_content(req.compositionContent, req.language, req.hashMethod, req.para)
+    return ContentHashResponse(uuid=req.uuid, parameter=req.para, **result)
 
 
 # 前端静态文件托管（API 路由必须在静态挂载之前注册）

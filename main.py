@@ -1,10 +1,10 @@
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, RedirectResponse
 from pydantic import BaseModel
 from typing import List, Optional
-import os
+from pathlib import Path
 import uvicorn
 
 from ccpd import essay_overlap_analysis
@@ -107,20 +107,40 @@ def content_hash(req: ContentHashRequest):
     return ContentHashResponse(uuid=req.uuid, parameter=req.para, **result)
 
 
-# 前端静态文件托管（API 路由必须在静态挂载之前注册）
-_frontend_dist = os.path.join(os.path.dirname(__file__), "frontend", "dist")
-if os.path.isdir(_frontend_dist):
-    app.mount("/assets", StaticFiles(directory=os.path.join(_frontend_dist, "assets")), name="assets")
+# 前端静态文件托管（API 路由必须在静态挂载和 SPA fallback 之前注册）
+_frontend_dist = Path(__file__).resolve().parent / "frontend" / "dist"
+_frontend_index = _frontend_dist / "index.html"
+_frontend_assets = _frontend_dist / "assets"
 
-    @app.get("/simulate", include_in_schema=False)
-    @app.get("/simulate/{path:path}", include_in_schema=False)
-    def serve_frontend(path: str = ""):
-        return FileResponse(os.path.join(_frontend_dist, "index.html"))
+if _frontend_assets.is_dir():
+    app.mount("/assets", StaticFiles(directory=_frontend_assets), name="assets")
 
-    @app.get("/", include_in_schema=False)
-    def redirect_root():
-        from fastapi.responses import RedirectResponse
-        return RedirectResponse(url="/simulate")
+
+def _serve_frontend_index():
+    if not _frontend_index.is_file():
+        raise HTTPException(
+            status_code=503,
+            detail={"msg": "前端构建产物不存在，请先执行 cd frontend && npm run build"},
+        )
+    return FileResponse(_frontend_index)
+
+
+@app.get("/", include_in_schema=False)
+def redirect_root():
+    return RedirectResponse(url="/simulate")
+
+
+@app.get("/simulate", include_in_schema=False)
+@app.get("/simulate/{path:path}", include_in_schema=False)
+def serve_frontend(path: str = ""):
+    return _serve_frontend_index()
+
+
+@app.get("/{path:path}", include_in_schema=False)
+def serve_frontend_fallback(path: str):
+    if path == "api" or path.startswith("api/") or path == "assets" or path.startswith("assets/"):
+        raise HTTPException(status_code=404, detail="Not Found")
+    return _serve_frontend_index()
 
 
 if __name__ == "__main__":

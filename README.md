@@ -36,7 +36,7 @@ For **each sentence** `s1` in the source essay, the system finds the best-matchi
 | **整句相似度** `sentence_score` | `difflib.SequenceMatcher` 字符级 ratio | 衡量两句字符序列的相似程度 / Character-sequence similarity |
 | **词组相似度** `word_score` | Jaccard 系数（jieba 分词后的词集交并比）| 衡量词汇重叠程度 / Lexical overlap via jieba word sets |
 
-$$\text{word\_score}(s_1, s_2) = \frac{|W_{s_1} \cap W_{s_2}|}{|W_{s_1} \cup W_{s_2}|}$$
+$\mathrm{word\_score}(s_1, s_2)=\frac{|W_{s_1}\cap W_{s_2}|}{|W_{s_1}\cup W_{s_2}|}$
 
 ### 1.3 句子是否重复 / Sentence-Level Flag
 
@@ -46,15 +46,15 @@ A sentence is flagged as repeated (`is_repeated = True`) when its `sentence_scor
 
 ### 1.4 三项全局指标 / Three Article-Level Metrics
 
-设当前作文切分出 $N_1$ 句，目标作文切分出 $N_2$ 句，被判定重复的句子数为 $R$：
+设当前作文切分出 ${N\_1}$ 句，目标作文切分出 $mathrm{N\_2}$ 句，被判定重复的句子数为 $R$：
 
-Let $N_1$ = sentences in source essay, $N_2$ = sentences in target essay, $R$ = repeated sentence count:
+Let $mathrm{N\_1}$ = sentences in source essay, $mathrm{N\_2}$ = sentences in target essay, $R$ = repeated sentence count:
 
 | 返回字段 / Field | 公式 / Formula | 含义 / Meaning |
 |---|---|---|
-| `sentence_repeat_rate` | $R / N_1$ | 当前作文中重复句比例 / Fraction of source sentences that are repeated |
-| `symmetry_rate` | $2R / (N_1 + N_2)$ | 对称重复率，类似 F1，同时考虑两篇文章篇幅 / Symmetric rate balancing both essay lengths |
-| `word_repeat_rate` | $\text{mean}(\text{all best\_word\_score})$ | 所有句子词组相似度的均值 / Mean lexical overlap across all sentences |
+| `sentence_repeat_rate` | $R / mathrm{N\_1}$ | 当前作文中重复句比例 / Fraction of source sentences that are repeated |
+| `symmetry_rate` | $2R / (mathrm{N\_1} + mathrm{N\_2})$ | 对称重复率，类似 F1，同时考虑两篇文章篇幅 / Symmetric rate balancing both essay lengths |
+| `word_repeat_rate` | $\operatorname{mean}(\mathrm{all\ best\_word\_score})$ | 所有句子词组相似度的均值 / Mean lexical overlap across all sentences |
 
 > **前端"文章重复率"展示的是 `symmetry_rate`**，因其对两篇文章的篇幅差异更具鲁棒性。  
 > **The "文章重复率" shown in the Web UI is `symmetry_rate`**, as it is more robust to length differences between essays.
@@ -192,6 +192,8 @@ for detail in result["details"]:
 服务启动后，可用任意 HTTP 客户端调用：  
 Once the server is running, call it with any HTTP client:
 
+#### 4.3.1 作文查重 / Composition Compare
+
 ```bash
 curl -X POST http://localhost:8540/api/composition_compare \
   -H "Content-Type: application/json" \
@@ -219,6 +221,88 @@ curl -X POST http://localhost:8540/api/composition_compare \
   ]
 }
 ```
+
+#### 4.3.2 内容指纹 / Content Hash
+
+`POST /api/contentHash` 用于对作文内容生成稳定的内容指纹，支持 `MinHash` 和 `SimHash` 两种算法。  
+`POST /api/contentHash` generates a stable content fingerprint for composition text, supporting both `MinHash` and `SimHash`.
+
+**请求参数 / Request fields:**
+
+| 字段 / Field | 类型 / Type | 必填 / Required | 默认值 / Default | 说明 / Description |
+|---|---|---:|---|---|
+| `uuid` | string | 是 / Yes | - | 业务侧传入的作文或请求唯一标识，响应会原样返回 / Caller-provided unique id, echoed in the response |
+| `compositionContent` | string | 是 / Yes | - | 需要生成指纹的作文正文 / Composition text to hash |
+| `language` | string | 否 / No | `zh` | 文本语言，仅支持 `zh` 或 `en` / Text language, only `zh` or `en` |
+| `hashMethod` | string | 否 / No | `MinHash` | 指纹算法，仅支持 `MinHash` 或 `SimHash` / Hash algorithm, only `MinHash` or `SimHash` |
+| `para` | integer | 否 / No | `128` | 算法参数：`MinHash` 表示签名长度；`SimHash` 表示 bit 位数，且必须是 8 的倍数 / Algorithm parameter: signature length for `MinHash`; bit width for `SimHash`, which must be a multiple of 8 |
+
+参数校验 / Validation:
+
+- `uuid` 不能为空 / `uuid` must not be empty.
+- `compositionContent` 不能为空 / `compositionContent` must not be empty.
+- `language` 仅支持 `zh`、`en` / `language` only supports `zh` or `en`.
+- `hashMethod` 仅支持 `MinHash`、`SimHash` / `hashMethod` only supports `MinHash` or `SimHash`.
+- `para` 必须为正整数 / `para` must be a positive integer.
+- 当 `hashMethod` 为 `SimHash` 时，`para` 必须是 8 的倍数 / For `SimHash`, `para` must be a multiple of 8.
+
+**MinHash 请求示例 / MinHash request example:**
+
+```bash
+curl -X POST http://localhost:8540/api/contentHash \
+  -H "Content-Type: application/json" \
+  -d '{
+    "uuid": "essay-001",
+    "compositionContent": "今天天气很好，我们一起去公园散步。",
+    "language": "zh",
+    "hashMethod": "MinHash",
+    "para": 128
+  }'
+```
+
+**MinHash 响应示例 / MinHash response example:**
+
+```json
+{
+  "uuid": "essay-001",
+  "minhash": [1947842, 7308921, 42177635],
+  "parameter": 128
+}
+```
+
+`minhash` 实际会返回 `para` 个整数；上例仅展示部分字段值。  
+The actual `minhash` array contains `para` integers; the example above is shortened.
+
+**SimHash 请求示例 / SimHash request example:**
+
+```bash
+curl -X POST http://localhost:8540/api/contentHash \
+  -H "Content-Type: application/json" \
+  -d '{
+    "uuid": "essay-002",
+    "compositionContent": "The weather is nice today, so we walked in the park.",
+    "language": "en",
+    "hashMethod": "SimHash",
+    "para": 64
+  }'
+```
+
+**SimHash 响应示例 / SimHash response example:**
+
+```json
+{
+  "uuid": "essay-002",
+  "simhash": 13701087659101639211,
+  "parameter": 64
+}
+```
+
+生成逻辑 / Generation logic:
+
+- 中文文本使用 `jieba` 分词；英文文本按空格切分 / Chinese text is tokenized with `jieba`; English text is split by spaces.
+- 分词后按 `SHINGLE_N = 5` 生成 token shingles / Tokens are converted into shingles with `SHINGLE_N = 5`.
+- `MinHash` 使用固定随机种子生成可复现签名 / `MinHash` uses a fixed random seed for reproducible signatures.
+- `SimHash` 返回一个整数形式的 bit 签名 / `SimHash` returns the bit signature as an integer.
 
 在线接口文档（Swagger UI）可访问：`http://localhost:8540/docs`  
 Interactive API docs (Swagger UI) are available at: `http://localhost:8540/docs`

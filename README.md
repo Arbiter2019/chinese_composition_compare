@@ -304,6 +304,90 @@ curl -X POST http://localhost:8540/api/contentHash \
 - `MinHash` 使用固定随机种子生成可复现签名 / `MinHash` uses a fixed random seed for reproducible signatures.
 - `SimHash` 返回一个整数形式的 bit 签名 / `SimHash` returns the bit signature as an integer.
 
+#### 4.3.3 批量召回查重 / Batch Plagiarism Detection
+
+`POST /api/batch_plagiarism_detection` 用于根据作文 ID 和候选 ID 列表查询数据库，先使用数据库中已生成的 hash 做 TopN 召回，再调用 `ccpd.py` 精确比对，返回重复率大于 0 的候选文章。  
+`POST /api/batch_plagiarism_detection` queries essays from MySQL, uses stored hash values for TopN recall, then runs the existing exact comparison logic and returns candidates whose repeat rate is greater than 0.
+
+**请求参数 / Request fields:**
+
+| 字段 / Field | 类型 / Type | 必填 / Required | 默认值 / Default | 说明 / Description |
+|---|---|---:|---|---|
+| `work_id` | string | 是 / Yes | - | 当前待查重作文 ID，必须是 bigint 字符串 / Source composition ID, must be a bigint string |
+| `env` | string | 是 / Yes | - | 数据库环境，仅支持 `dev`、`uat`、`prod` / DB environment |
+| `hashMethod` | string | 否 / No | `MinHash` | 召回算法，仅支持 `MinHash` 或 `SimHash` / Recall hash method |
+| `lang` | string | 否 / No | `zh` | 当前只支持 `zh`；传入其他值会返回 400 / Only `zh` is currently supported |
+| `composition_list` | array | 是 / Yes | - | 待比对候选列表，不能为空 / Non-empty candidate list |
+
+`composition_list` item:
+
+| 字段 / Field | 类型 / Type | 必填 / Required | 说明 / Description |
+|---|---|---:|---|
+| `scene_type` | integer | 是 / Yes | 查重场景：`1`=同用户历史，`2`=同标题，`3`=范文库，`4`=二次批改 |
+| `compare_id` | string | 是 / Yes | 候选文章 ID，必须是 bigint 字符串 |
+
+**请求示例 / Request example:**
+
+```bash
+curl -X POST http://localhost:8540/api/batch_plagiarism_detection \
+  -H "Content-Type: application/json" \
+  -d '{
+    "work_id": "2",
+    "env": "dev",
+    "composition_list": [
+      {"scene_type": 1, "compare_id": "79"},
+      {"scene_type": 3, "compare_id": "1"}
+    ]
+  }'
+```
+
+`hashMethod` 和 `lang` 可缺省；缺省时分别使用 `MinHash` 和 `zh`。  
+`hashMethod` and `lang` are optional; defaults are `MinHash` and `zh`.
+
+**成功响应示例 / Success response example:**
+
+```json
+{
+  "code": 200,
+  "msg": "success",
+  "data": {
+    "work_id": "2",
+    "compare_result": [
+      {
+        "compare_id": "79",
+        "scene_type": 1,
+        "repeat_rate": 0.8571
+      }
+    ]
+  }
+}
+```
+
+如果没有重复率大于 0 的候选，`compare_result` 字段会缺省：  
+If no candidate has a repeat rate greater than 0, `compare_result` is omitted:
+
+```json
+{
+  "code": 200,
+  "msg": "success",
+  "data": {
+    "work_id": "2"
+  }
+}
+```
+
+处理规则 / Processing rules:
+
+- `composition_list` 会按 `(scene_type, compare_id)` 去重；不同场景下的同一个 ID 会保留。
+- `scene_type` 为 `1`、`2`、`4` 时查询 `{MYSQL_DB}.correct_task`；`scene_type` 为 `3` 时查询 `{MYSQL_DB}.composition_sample`。
+- `work_id` 查询 `{MYSQL_DB}.correct_task`，并要求 `deleted=0`。
+- `MinHash` 和 `SimHash` 均读取数据库中的字符串字段，并使用同一行的 `hash_param` 校验和计算相似度。
+- 缺失候选、空 hash、非法 hash、候选 `hash_param` 与源作文不一致时，该候选会被忽略。
+- TopN 默认值为 `config.py` 中的 `BATCH_TOP_N = 50`。
+- 最终返回字段 `repeat_rate` 使用 `ccpd.py` 的 `symmetry_rate`，保留 4 位小数。
+- 返回结果按 `repeat_rate` 降序，再按 `compare_id` 降序。
+- 服务会向标准输出打印 JSON 日志，包含请求 ID、候选数量、召回相似度、是否进入 TopN、最终查重率和耗时；日志不会记录作文正文。
+
 在线接口文档（Swagger UI）可访问：`http://localhost:8540/docs`  
 Interactive API docs (Swagger UI) are available at: `http://localhost:8540/docs`
 
@@ -330,6 +414,7 @@ fastapi>=0.110.0
 uvicorn[standard]>=0.29.0
 numpy>=1.24.0
 jieba>=0.42.1
+pymysql>=1.1.0
 ```
 
 ### 5.3 仅启动后端（无前端）/ Backend Only
@@ -407,3 +492,39 @@ npm run dev
 
 前端默认运行在 `http://localhost:5173`，API 请求自动代理到后端。  
 The frontend runs at `http://localhost:5173` and proxies API calls to the backend automatically.
+
+### 5.7 服务器同步文件 / Files to Sync to Server
+
+本次批量召回查重新增或修改了以下后端文件，部署服务器时需要同步：  
+For this batch detection update, sync these backend files to the server:
+
+```text
+main.py
+batch_plagiarism.py
+config.py
+requirements.txt
+README.md
+```
+
+同步后在服务器执行依赖安装或更新：  
+After syncing, install or update Python dependencies:
+
+```bash
+pip install -r requirements.txt
+```
+
+然后重启后端服务：  
+Then restart the backend service:
+
+```bash
+python main.py
+```
+
+无需同步的本地测试与结果文件：  
+Local-only test data and result files do not need to be synced:
+
+```text
+testData/
+__pycache__/
+.pytest_cache/
+```
